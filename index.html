@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IDRX Liquidity Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e1e4ea; --text-dim: #8b8fa3;
+    --green: #22c55e; --red: #ef4444; --blue: #60a5fa; --accent: #6c72cb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh; padding: 24px;
+  }
+  .container { max-width: 1280px; margin: 0 auto; }
+  .header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 24px; flex-wrap: wrap; gap: 16px;
+  }
+  .header h1 { font-size: 24px; font-weight: 700; }
+  .header .subtitle { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+  .header .meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .header button {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    padding: 8px 14px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  }
+  .header button:hover { background: var(--border); }
+  .header button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .loading-overlay {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 80px 0; gap: 16px; color: var(--text-dim);
+  }
+  .spinner {
+    width: 36px; height: 36px; border: 3px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error-box {
+    background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3);
+    border-radius: 12px; padding: 24px; text-align: center; color: var(--red);
+    margin-bottom: 24px;
+  }
+  .counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .counter {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px;
+  }
+  .counter .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .counter .value { font-size: 28px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .counter .detail { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .counter.liquidity .value { color: var(--blue); }
+  .counter.volume .value { color: var(--green); }
+  .counter.pools .value { color: var(--accent); }
+  .counter.chains .value { color: var(--text); }
+  .chain-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .chain-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+  }
+  .chain-card .chain-name { font-size: 16px; font-weight: 700; margin-bottom: 12px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+  .chain-card .chain-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .chain-card .chain-stat { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; }
+  .chain-card .chain-stat .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .chain-card .chain-dexs { font-size: 12px; color: var(--text-dim); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .chart-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+  }
+  .chart-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 16px; }
+  .chart-card canvas { max-height: 300px; }
+  .table-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; margin-bottom: 24px; overflow-x: auto;
+  }
+  .table-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--text-dim); font-weight: 500; padding: 10px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer; user-select: none; }
+  th:hover { color: var(--text); }
+  th .sort-arrow { margin-left: 4px; font-size: 10px; }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .chain-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  }
+  .chain-badge.base { background: rgba(59,130,246,0.15); color: #3b82f6; }
+  .chain-badge.bsc { background: rgba(245,158,11,0.15); color: #f59e0b; }
+  .chain-badge.polygon { background: rgba(139,92,246,0.15); color: #8b5cf6; }
+  .chain-badge.solana { background: rgba(6,182,212,0.15); color: #06b6d4; }
+  .chain-badge.kaia { background: rgba(16,185,129,0.15); color: #10b981; }
+  .chain-badge.lisk { background: rgba(236,72,153,0.15); color: #ec4899; }
+  .dex-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+    background: rgba(108,114,203,0.12); color: var(--accent);
+  }
+  .label-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px;
+    background: rgba(255,255,255,0.06); color: var(--text-dim); margin-left: 4px;
+  }
+  .price-change { font-size: 12px; }
+  .price-change.up { color: var(--green); }
+  .price-change.down { color: var(--red); }
+  .pool-link { color: var(--accent); text-decoration: none; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+  .pool-link:hover { text-decoration: underline; }
+  .footer { text-align: center; color: var(--text-dim); font-size: 12px; margin-top: 32px; }
+  @media (max-width: 860px) {
+    .counters { grid-template-columns: repeat(2, 1fr); }
+    .charts { grid-template-columns: 1fr; }
+    .chain-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container" id="app"></div>
+<script>
+const CHAIN_COLORS = {
+  base: '#3b82f6', bsc: '#f59e0b', kaia: '#10b981', lisk: '#ec4899', polygon: '#8b5cf6', solana: '#06b6d4',
+};
+
+let DATA = null;
+let sortCol = 'liquidity';
+let sortDir = 'desc';
+let charts = {};
+
+function fmtUsd(n) {
+  if (Math.abs(n) >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return '$' + (n / 1e3).toFixed(2) + 'K';
+  return '$' + n.toFixed(2);
+}
+
+function destroyCharts() {
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+}
+
+function showLoading() {
+  document.getElementById('app').innerHTML = `
+    <div class="loading-overlay">
+      <div class="spinner"></div>
+      <div>Fetching IDRX liquidity data...</div>
+    </div>
+  `;
+}
+
+function showError(msg) {
+  document.getElementById('app').innerHTML = `
+    <div class="header"><div><h1>IDRX Liquidity Dashboard</h1></div></div>
+    <div class="error-box">${msg}</div>
+    <div style="text-align:center"><button onclick="loadAndRender()" style="background:var(--surface);color:var(--text);border:1px solid var(--border);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px">Retry</button></div>
+  `;
+}
+
+function renderApp() {
+  const updated = new Date(DATA.meta.last_updated);
+  const ts = updated.toLocaleString();
+  const t = DATA.totals;
+  const chainList = DATA.chains.map(c => c.chain.toUpperCase()).join(', ');
+
+  document.getElementById('app').innerHTML = `
+    <div class="header">
+      <div>
+        <h1>IDRX Liquidity Dashboard</h1>
+        <div class="subtitle">Stablecoin pools across all chains &middot; Data from Dexscreener + GeckoTerminal</div>
+      </div>
+      <div class="meta">
+        <button onclick="loadAndRender()">Refresh</button>
+        <span style="font-size:12px;color:var(--text-dim)">Updated: ${ts}</span>
+      </div>
+    </div>
+    <div class="counters">
+      <div class="counter liquidity">
+        <div class="label">Total Liquidity</div>
+        <div class="value">${fmtUsd(t.totalLiquidity)}</div>
+        <div class="detail">Across ${t.chainCount} chains</div>
+      </div>
+      <div class="counter volume">
+        <div class="label">24h Volume</div>
+        <div class="value">${fmtUsd(t.totalVolume24h)}</div>
+        <div class="detail">Last 24 hours</div>
+      </div>
+      <div class="counter pools">
+        <div class="label">Stablecoin Pools</div>
+        <div class="value">${DATA.meta.totalPairs}</div>
+        <div class="detail">${DATA.meta.significantPairs} with &gt;$1 liquidity</div>
+      </div>
+      <div class="counter chains">
+        <div class="label">Chains</div>
+        <div class="value">${t.chainCount}</div>
+        <div class="detail">${chainList}</div>
+      </div>
+    </div>
+    <div class="chain-grid" id="chain-grid"></div>
+    <div class="charts">
+      <div class="chart-card"><h3>Liquidity by Chain</h3><canvas id="liquidity-pie"></canvas></div>
+      <div class="chart-card"><h3>Volume by Chain</h3><canvas id="volume-bar"></canvas></div>
+    </div>
+    <div class="table-card">
+      <h3>All IDRX Stablecoin Pools</h3>
+      <table>
+        <thead><tr>
+          <th onclick="sortTable('chain')">Chain <span class="sort-arrow"></span></th>
+          <th onclick="sortTable('dex')">DEX <span class="sort-arrow"></span></th>
+          <th onclick="sortTable('pair')">Pair <span class="sort-arrow"></span></th>
+          <th onclick="sortTable('liquidity')" class="sorted-desc">Liquidity <span class="sort-arrow">▼</span></th>
+          <th onclick="sortTable('volume')">Volume 24h <span class="sort-arrow"></span></th>
+          <th onclick="sortTable('price')">Price <span class="sort-arrow"></span></th>
+          <th onclick="sortTable('change')">24h Δ <span class="sort-arrow"></span></th>
+          <th onclick="sortTable('txns')">24h Txns <span class="sort-arrow"></span></th>
+          <th>Pair</th>
+        </tr></thead>
+        <tbody id="pool-table"></tbody>
+      </table>
+    </div>
+    <div class="footer">
+      IDRX Liquidity Dashboard &middot; Data from Dexscreener + GeckoTerminal &middot; ${ts}
+    </div>
+  `;
+
+  renderChainCards();
+  renderCharts();
+  renderTable();
+}
+
+function renderChainCards() {
+  const grid = document.getElementById('chain-grid');
+  grid.innerHTML = DATA.chains.map(c => {
+    const color = CHAIN_COLORS[c.chain] || '#6b7280';
+    const pct = DATA.totals.totalLiquidity > 0 ? (c.totalLiquidity / DATA.totals.totalLiquidity * 100).toFixed(1) : 0;
+    return `<div class="chain-card">
+      <div class="chain-name"><span class="chain-dot" style="background:${color}"></span>${c.chain}
+      <span style="font-size:12px;color:var(--text-dim);font-weight:400;margin-left:auto">${pct}%</span></div>
+      <div class="chain-stat"><span>Liquidity</span><span class="val" style="color:var(--blue)">${fmtUsd(c.totalLiquidity)}</span></div>
+      <div class="chain-stat"><span>Volume 24h</span><span class="val" style="color:var(--green)">${fmtUsd(c.totalVolume24h)}</span></div>
+      <div class="chain-stat"><span>Pools</span><span class="val">${c.poolCount}</span></div>
+      <div class="chain-dexs">${c.dexs.map(d => '<span class="dex-badge">' + d + '</span>').join(' ')}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderCharts() {
+  const liqLabels = DATA.chains.map(c => c.chain.toUpperCase());
+  const liqData = DATA.chains.map(c => c.totalLiquidity);
+  const liqColors = DATA.chains.map(c => CHAIN_COLORS[c.chain] || '#6b7280');
+  const liqTotal = liqData.reduce((a,b) => a+b, 0);
+
+  charts.liquidity = new Chart(document.getElementById('liquidity-pie').getContext('2d'), {
+    type: 'doughnut',
+    data: { labels: liqLabels, datasets: [{ data: liqData, backgroundColor: liqColors, borderWidth: 2, borderColor: '#0f1117' }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { padding: 16, color: '#e1e4ea', font: { size: 12 }, usePointStyle: true } },
+        tooltip: { callbacks: { label: ctx => ' ' + ctx.label + ': ' + fmtUsd(ctx.parsed) + ' (' + (liqTotal > 0 ? ((ctx.parsed/liqTotal)*100).toFixed(1) : 0) + '%)' } }
+      }
+    }
+  });
+
+  const tfColors = {
+    '24h': 'rgba(96,165,250,0.8)',
+    '7d': 'rgba(34,197,94,0.7)',
+    '30d': 'rgba(245,158,11,0.7)',
+    '3m': 'rgba(139,92,246,0.7)',
+  };
+  const tfBorders = {
+    '24h': '#60a5fa', '7d': '#22c55e', '30d': '#f59e0b', '3m': '#8b5cf6',
+  };
+
+  charts.volume = new Chart(document.getElementById('volume-bar').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: DATA.chains.map(c => c.chain.toUpperCase()),
+      datasets: [
+        { label: '24h', data: DATA.chains.map(c => c.totalVolume24h), backgroundColor: tfColors['24h'], borderColor: tfBorders['24h'], borderWidth: 1 },
+        { label: '7d', data: DATA.chains.map(c => c.totalVolume7d), backgroundColor: tfColors['7d'], borderColor: tfBorders['7d'], borderWidth: 1 },
+        { label: '30d', data: DATA.chains.map(c => c.totalVolume30d), backgroundColor: tfColors['30d'], borderColor: tfBorders['30d'], borderWidth: 1 },
+        { label: '3m', data: DATA.chains.map(c => c.totalVolume3m), backgroundColor: tfColors['3m'], borderColor: tfBorders['3m'], borderWidth: 1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { padding: 16, color: '#e1e4ea', font: { size: 12 }, usePointStyle: true } },
+        tooltip: { callbacks: { label: ctx => ' ' + ctx.dataset.label + ': ' + fmtUsd(ctx.parsed.y) } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#8b8fa3', font: { size: 11 } } },
+        y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', font: { size: 11 }, callback: v => fmtUsd(v) } }
+      }
+    }
+  });
+}
+
+function renderTable() {
+  let pools = [...DATA.pools];
+  pools.sort((a, b) => {
+    let va, vb;
+    switch(sortCol) {
+      case 'chain': va = a.chain; vb = b.chain; break;
+      case 'dex': va = a.dex; vb = b.dex; break;
+      case 'pair': va = p.baseToken === 'IDRX' ? p.quoteToken : p.baseToken; vb = b.baseToken === 'IDRX' ? b.quoteToken : b.baseToken; break;
+      case 'liquidity': va = a.liquidityUsd; vb = b.liquidityUsd; break;
+      case 'volume': va = a.volume24h; vb = b.volume24h; break;
+      case 'price': va = a.priceUsd; vb = b.priceUsd; break;
+      case 'change': va = a.priceChange24h; vb = b.priceChange24h; break;
+      case 'txns': va = a.txns24h_buys + a.txns24h_sells; vb = b.txns24h_buys + b.txns24h_sells; break;
+      default: va = a.liquidityUsd; vb = b.liquidityUsd;
+    }
+    if (typeof va === 'string') return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sortDir === 'asc' ? va - vb : vb - va;
+  });
+
+  document.getElementById('pool-table').innerHTML = pools.map(p => {
+    const pc = p.priceChange24h;
+    const pcClass = pc > 0 ? 'up' : (pc < 0 ? 'down' : '');
+    const pcStr = pc === 0 ? '0%' : (pc > 0 ? '+' + pc.toFixed(2) + '%' : pc.toFixed(2) + '%');
+    const txns = p.txns24h_buys + p.txns24h_sells;
+    const labels = (p.labels || []).map(l => '<span class="label-badge">' + l + '</span>').join('');
+    return '<tr>' +
+      '<td><span class="chain-badge ' + p.chain + '">' + p.chain + '</span></td>' +
+      '<td><span class="dex-badge">' + p.dex + '</span>' + labels + '</td>' +
+      '<td>' + (p.baseToken === 'IDRX' ? 'IDRX/' + p.quoteToken : p.baseToken + '/IDRX') + '</td>' +
+      '<td>' + fmtUsd(p.liquidityUsd) + '</td>' +
+      '<td>' + fmtUsd(p.volume24h) + '</td>' +
+      '<td style="font-family:monospace;font-size:12px">$' + p.priceUsd.toFixed(8) + '</td>' +
+      '<td><span class="price-change ' + pcClass + '">' + pcStr + '</span></td>' +
+      '<td>' + (txns > 0 ? txns : '-') + '</td>' +
+      '<td><a class="pool-link" href="' + p.url + '" target="_blank" title="' + p.pairAddress + '">' + p.pairAddress.slice(0,6) + '...' + p.pairAddress.slice(-4) + '</a></td>' +
+      '</tr>';
+  }).join('');
+
+  document.querySelectorAll('th .sort-arrow').forEach(el => el.textContent = '');
+  document.querySelectorAll('th').forEach(th => th.classList.remove('sorted-desc', 'sorted-asc'));
+  const activeTh = document.querySelector('th[onclick="sortTable(\'' + sortCol + '\')"]');
+  if (activeTh) {
+    activeTh.classList.add(sortDir === 'desc' ? 'sorted-desc' : 'sorted-asc');
+    activeTh.querySelector('.sort-arrow').textContent = sortDir === 'desc' ? '\u25bc' : '\u25b2';
+  }
+}
+
+function sortTable(col) {
+  if (sortCol === col) { sortDir = sortDir === 'desc' ? 'asc' : 'desc'; }
+  else { sortCol = col; sortDir = 'desc'; }
+  renderTable();
+}
+
+async function loadAndRender() {
+  showLoading();
+  try {
+    const resp = await fetch('/api/liquidity');
+    if (!resp.ok) throw new Error('API returned ' + resp.status);
+    DATA = await resp.json();
+    destroyCharts();
+    renderApp();
+  } catch(e) {
+    showError('Failed to load liquidity data. The API might be starting up (cold start).<br><br><small>' + e.message + '</small>');
+  }
+}
+
+loadAndRender();
+</script>
+</body>
+</html>
