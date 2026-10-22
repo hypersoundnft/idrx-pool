@@ -14,8 +14,9 @@ STABLECOINS = {
     "USD₮", "USD₮0",
 }
 
-GECKO_NETWORKS = ["kaia", "lisk"]
-DEX_MAP = {"kaia": "dgswap", "lisk": "velodrome"}
+GECKO_NETWORKS = ["kaia"]
+GECKO_TOKENS = {"celo": "0x18bc5bcc660cf2b9ce3cd51a404afe1a0cbd3c22"}
+DEX_MAP = {"kaia": "dgswap", "celo": "celodex"}
 
 def is_stablecoin(symbol):
     return symbol.upper().strip() in STABLECOINS or "USD" in symbol.upper()
@@ -46,6 +47,12 @@ def fetch_dexscreener():
 
 def fetch_gecko(network):
     url = f"https://api.geckoterminal.com/api/v2/search/pools?query=IDRX&network={network}"
+    req = Request(url, headers={"User-Agent": "IDRX-Liquidity-Tracker/1.0"})
+    with urlopen(req, timeout=12) as resp:
+        return json.loads(resp.read().decode()).get("data", [])
+
+def fetch_gecko_token_pools(network, token_address):
+    url = f"https://api.geckoterminal.com/api/v2/networks/{network}/tokens/{token_address}/pools"
     req = Request(url, headers={"User-Agent": "IDRX-Liquidity-Tracker/1.0"})
     with urlopen(req, timeout=12) as resp:
         return json.loads(resp.read().decode()).get("data", [])
@@ -99,9 +106,10 @@ def process_gecko_pool(pool, network):
     remaining = quote_part[len(quote_symbol):].strip()
     if remaining:
         fee_pct = remaining.rstrip("%") + "%"
+    dex_id = pool.get("relationships", {}).get("dex", {}).get("data", {}).get("id")
     return {
         "chain": network,
-        "dex": DEX_MAP.get(network, network),
+        "dex": dex_id or DEX_MAP.get(network, network),
         "pairAddress": a.get("address", ""),
         "url": f"https://www.geckoterminal.com/{network}/pools/{a.get('address', '')}",
         "baseToken": base_symbol,
@@ -169,6 +177,16 @@ def get_data():
         for pool in fetch_gecko(network):
             p = process_gecko_pool(pool, network)
             # Enrich with OHLCV-based volumes for longer timeframes
+            addr = p["pairAddress"]
+            v7, v30, v90 = fetch_gecko_ohlcv(network, addr)
+            if v7 > 0:
+                p["volume7d"] = v7
+                p["volume30d"] = v30
+                p["volume3m"] = v90
+            enriched.append(p)
+    for network, token_address in GECKO_TOKENS.items():
+        for pool in fetch_gecko_token_pools(network, token_address):
+            p = process_gecko_pool(pool, network)
             addr = p["pairAddress"]
             v7, v30, v90 = fetch_gecko_ohlcv(network, addr)
             if v7 > 0:
