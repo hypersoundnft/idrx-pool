@@ -1,9 +1,10 @@
 from http.server import BaseHTTPRequestHandler
 import json
+import time
 from datetime import datetime, timezone
 from collections import defaultdict
 from urllib.request import urlopen, Request
-from urllib.error import URLError
+from urllib.error import URLError, HTTPError
 
 STABLECOINS = {
     "USDC", "USDT", "USDT0", "frxUSD", "DAI", "USDS", "USDM",
@@ -17,6 +18,33 @@ STABLECOINS = {
 GECKO_NETWORKS = ["kaia"]
 GECKO_TOKENS = {"celo": "0x18bc5bcc660cf2b9ce3cd51a404afe1a0cbd3c22"}
 DEX_MAP = {"kaia": "dgswap", "celo": "celodex"}
+
+UA = {"User-Agent": "IDRX-Liquidity-Tracker/1.0"}
+
+CACHE_TTL = 60
+_CACHE = {"data": None, "ts": 0}
+
+def http_get_json(url, retries=3):
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = Request(url, headers=UA)
+            with urlopen(req, timeout=12) as resp:
+                return json.loads(resp.read().decode())
+        except HTTPError as e:
+            last_err = e
+            if e.code != 429:
+                raise
+            retry_after = 0
+            try:
+                retry_after = int(e.headers.get("Retry-After", 0))
+            except (ValueError, AttributeError):
+                pass
+            time.sleep(max(2 ** attempt, retry_after))
+        except URLError as e:
+            last_err = e
+            time.sleep(2 ** attempt)
+    raise last_err
 
 def is_stablecoin(symbol):
     return symbol.upper().strip() in STABLECOINS or "USD" in symbol.upper()
@@ -41,21 +69,15 @@ def safe_get(d, *keys, default=0):
 
 def fetch_dexscreener():
     url = "https://api.dexscreener.com/latest/dex/search/?q=IDRX"
-    req = Request(url, headers={"User-Agent": "IDRX-Liquidity-Tracker/1.0"})
-    with urlopen(req, timeout=12) as resp:
-        return json.loads(resp.read().decode()).get("pairs", [])
+    return http_get_json(url).get("pairs", [])
 
 def fetch_gecko(network):
     url = f"https://api.geckoterminal.com/api/v2/search/pools?query=IDRX&network={network}"
-    req = Request(url, headers={"User-Agent": "IDRX-Liquidity-Tracker/1.0"})
-    with urlopen(req, timeout=12) as resp:
-        return json.loads(resp.read().decode()).get("data", [])
+    return http_get_json(url).get("data", [])
 
 def fetch_gecko_token_pools(network, token_address):
     url = f"https://api.geckoterminal.com/api/v2/networks/{network}/tokens/{token_address}/pools"
-    req = Request(url, headers={"User-Agent": "IDRX-Liquidity-Tracker/1.0"})
-    with urlopen(req, timeout=12) as resp:
-        return json.loads(resp.read().decode()).get("data", [])
+    return http_get_json(url).get("data", [])
 
 def process_dex_pairs(pairs):
     results = []
@@ -137,15 +159,13 @@ def process_gecko_pool(pool, network):
 def fetch_gecko_ohlcv(network, address):
     """Fetch daily OHLCV for a GeckoTerminal pool to compute 7d/30d/3m volume."""
     url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{address}/ohlcv/day"
-    req = Request(url, headers={"User-Agent": "IDRX-Liquidity-Tracker/1.0"})
     try:
-        with urlopen(req, timeout=12) as resp:
-            data = json.loads(resp.read().decode())
-            ohlcv = data.get("data", {}).get("attributes", {}).get("ohlcv_list", [])
-            vol_7d = sum(float(o[5]) for o in ohlcv[-7:]) if len(ohlcv) >= 7 else 0
-            vol_30d = sum(float(o[5]) for o in ohlcv[-30:]) if len(ohlcv) >= 30 else 0
-            vol_3m = sum(float(o[5]) for o in ohlcv[-90:]) if len(ohlcv) >= 90 else 0
-            return (round(vol_7d, 2), round(vol_30d, 2), round(vol_3m, 2))
+        data = http_get_json(url, retries=1)
+        ohlcv = data.get("data", {}).get("attributes", {}).get("ohlcv_list", [])
+        vol_7d = sum(float(o[5]) for o in ohlcv[-7:]) if len(ohlcv) >= 7 else 0
+        vol_30d = sum(float(o[5]) for o in ohlcv[-30:]) if len(ohlcv) >= 30 else 0
+        vol_3m = sum(float(o[5]) for o in ohlcv[-90:]) if len(ohlcv) >= 90 else 0
+        return (round(vol_7d, 2), round(vol_30d, 2), round(vol_3m, 2))
     except Exception:
         return (0, 0, 0)
 
@@ -172,6 +192,8 @@ def aggregate_by_chain(pairs):
     } for c in sorted(chains.values(), key=lambda x: -x["totalLiquidity"])]
 
 def get_data():
+    if _CACHE["data"] is not None and time.time() - _CACHE["ts"] < CACHE_TTL:
+        return _CACHE["data"]
     enriched = process_dex_pairs(fetch_dexscreener())
     for network in GECKO_NETWORKS:
         for pool in fetch_gecko(network):
@@ -197,7 +219,7 @@ def get_data():
     stable = [p for p in enriched if is_idrx_pair(p)]
     significant = [p for p in stable if p["liquidityUsd"] >= 1]
     chains = aggregate_by_chain(stable)
-    return {
+    payload = {
         "meta": {
             "last_updated": datetime.now(timezone.utc).isoformat(),
             "totalPairs": len(stable),
@@ -214,6 +236,9 @@ def get_data():
         "chains": chains,
         "pools": sorted(stable, key=lambda p: -p["liquidityUsd"]),
     }
+    _CACHE["data"] = payload
+    _CACHE["ts"] = time.time()
+    return payload
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -228,6 +253,19 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         except Exception as e:
+            if _CACHE["data"] is not None:
+                data = dict(_CACHE["data"])
+                data["meta"] = dict(data["meta"])
+                data["meta"]["stale"] = True
+                body = json.dumps(data).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "public, max-age=30, s-maxage=30")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             err = json.dumps({"error": str(e)}).encode()
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
